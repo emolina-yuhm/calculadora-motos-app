@@ -1,0 +1,68 @@
+{
+  "version": 36,
+  "cards": [
+    {
+      "id": "visa-mastercard-nativa-cabal",
+      "nombre": "Visa y Mastercard Nativa Cabal",
+      "coeficientes": {
+        "3": 14,
+        "6": 25
+      }
+    },
+    {
+      "id": "amex-bcos-santander-macro-patagonia-hsbc-galicia",
+      "nombre": "AMEX: bco Santander, Macro, Patagonia, HSBC, Galicia",
+      "coeficientes": {}
+    },
+    {
+      "id": "visa-mastercard-santander-macro-galicia-frances",
+      "nombre": "VISA Mastercard: Santander, Macro, Galicia y Frances",
+      "coeficientes": {}
+    },
+    {
+      "id": "santander-getnet",
+      "nombre": "Bco SANTANDER Getnet",
+      "coeficientes": {}
+    },
+    {
+      "id": "visa-master",
+      "nombre": "VISA/MASTER",
+      "coeficientes": {}
+    },
+    {
+      "id": "no-bancarias-visa-master",
+      "nombre": "NO BANCARIAS: VISA/MASTER",
+      "coeficientes": {}
+    },
+    {
+      "id": "cabal-no-simple",
+      "nombre": "CABAL NO SIMPLE",
+      "coeficientes": {}
+    },
+    {
+      "id": "amex-no-simple",
+      "nombre": "AMEX NO SIMPLE",
+      "coeficientes": {}
+    },
+    {
+      "id": "naranja",
+      "nombre": "NARANJA",
+      "coeficientes": {}
+    },
+    {
+      "id": "sucredito",
+      "nombre": "SUCREDITO",
+      "coeficientes": {}
+    },
+    {
+      "id": "credicash",
+      "nombre": "CREDICASH",
+      "coeficientes": {}
+    },
+    {
+      "id": "sol",
+      "nombre": "SOL",
+      "coeficientes": {}
+    }
+  ]
+}

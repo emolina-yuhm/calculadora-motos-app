@@ -1,0 +1,16 @@
+{
+  "name": "yuhmak-finance-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "cross-env NODE_ENV=development ADMIN_SECRET=changeme PORT=5175 node index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3"
+  }
+}
