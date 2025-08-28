@@ -4,9 +4,10 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "cross-env NODE_ENV=development ADMIN_SECRET=changeme PORT=5175 node index.js"
+    "dev": "cross-env NODE_ENV=development ADMIN_SECRET=changeme PORT=5175 node server.js"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
     "cors": "^2.8.5",
     "express": "^4.19.2"
   },
