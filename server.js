@@ -14,9 +14,41 @@ const PORT = process.env.PORT || 5175
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'changeme'
 
 // ──────────────────────────────────────────────
-// MODO SUPABASE (persistente y gratis)
-// Si están estas 2 vars, usamos BD y NO usamos archivo
+// CORS seguro por env (puede haber varios orígenes)
+// Ej: ALLOWED_ORIGINS="https://tu-app.netlify.app,https://otra.com"
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean)
+
+const corsOptions = {
+  origin: (origin, cb) => {
+    // Permite herramientas tipo curl/postman (sin origin)
+    if (!origin) return cb(null, true)
+    if (ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
+      return cb(null, true)
+    }
+    return cb(new Error('Not allowed by CORS'))
+  },
+  methods: ['GET', 'PUT', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'X-Requested-With',
+    'Authorization',
+    'x-admin-secret',
+    'X-Admin-Secret'
+  ],
+  credentials: true
+}
+
+app.use(cors(corsOptions))
+// Responder preflight global
+app.options('*', cors(corsOptions))
+
+app.use(express.json())
+
 // ──────────────────────────────────────────────
+// MODO SUPABASE (persistente y gratis)
 const SUPABASE_URL = process.env.SUPABASE_URL || ''
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || ''
 const useSupabase = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE)
@@ -24,12 +56,7 @@ const supabase = useSupabase ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
 
 // ──────────────────────────────────────────────
 // MODO ARCHIVO (solo si NO hay Supabase)
-// Si Render te “pide” DATA_FILE, poné un dummy: /tmp/unused.json
-// ──────────────────────────────────────────────
 let DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'cards.json')
-
-app.use(cors({ origin: true }))
-app.use(express.json())
 
 function ensureDataFile(filePath) {
   const dir = path.dirname(filePath)
@@ -57,14 +84,12 @@ function ensureDataFile(filePath) {
   }
 }
 
-// Solo preparo archivo si NO uso Supabase
 if (!useSupabase) {
   DATA_FILE = ensureDataFile(DATA_FILE)
 }
 
 // ──────────────────────────────────────────────
 // Storage helpers
-// ─────────────────────────────────────────────-
 async function readCards() {
   if (useSupabase) {
     const { data, error } = await supabase
@@ -109,7 +134,6 @@ async function writeCards(payload) {
 
 // ──────────────────────────────────────────────
 // Rutas
-// ─────────────────────────────────────────────-
 app.get('/', (_req, res) => {
   res.type('text/plain').send('OK. Usá /cards para ver/guardar la configuración.')
 })
@@ -125,15 +149,25 @@ app.get('/cards', async (_req, res) => {
 })
 
 app.put('/cards', async (req, res) => {
-  const secret = req.header('x-admin-secret')
+  const secret =
+    req.get('x-admin-secret') ||
+    req.get('X-Admin-Secret') ||
+    ''
+
   if (secret !== ADMIN_SECRET) {
     return res.status(401).json({ error: 'unauthorized' })
   }
+
   const body = req.body
   if (!body || !Array.isArray(body.cards)) {
     return res.status(400).json({ error: 'invalid_body' })
   }
-  const payload = { version: Number(body.version || 1), cards: body.cards }
+
+  const payload = {
+    version: Number(body.version || 1),
+    cards: body.cards
+  }
+
   try {
     await writeCards(payload)
     res.json({ ok: true })
