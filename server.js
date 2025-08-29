@@ -30,13 +30,14 @@ const corsOptions = {
     }
     return cb(new Error('Not allowed by CORS'))
   },
-  methods: ['GET', 'PUT', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'OPTIONS'],
   allowedHeaders: [
     'Content-Type',
     'X-Requested-With',
     'Authorization',
     'x-admin-secret',
-    'X-Admin-Secret'
+    'X-Admin-Secret',
+    'Accept'
   ],
   credentials: true
 }
@@ -48,7 +49,7 @@ app.options('*', cors(corsOptions))
 app.use(express.json())
 
 // ──────────────────────────────────────────────
-// MODO SUPABASE (persistente y gratis)
+// MODO SUPABASE (persistente)
 const SUPABASE_URL = process.env.SUPABASE_URL || ''
 const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || ''
 const useSupabase = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE)
@@ -89,7 +90,7 @@ if (!useSupabase) {
 }
 
 // ──────────────────────────────────────────────
-// Storage helpers
+// Helpers de lectura/escritura + backup
 async function readCards() {
   if (useSupabase) {
     const { data, error } = await supabase
@@ -112,7 +113,33 @@ async function readCards() {
   }
 }
 
-async function writeCards(payload) {
+async function backupSnapshot(prevPayload) {
+  if (useSupabase) {
+    try {
+      await supabase.from('configs_history').insert({
+        key: 'cards',
+        payload: prevPayload
+      })
+    } catch (e) {
+      console.warn('[SUPABASE] history insert error (ignorado):', e?.message || e)
+    }
+  } else {
+    try {
+      const histDir = path.join(path.dirname(DATA_FILE), 'history')
+      fs.mkdirSync(histDir, { recursive: true })
+      const file = path.join(histDir, `cards_${Date.now()}.json`)
+      fs.writeFileSync(file, JSON.stringify(prevPayload, null, 2))
+    } catch (e) {
+      console.warn('[FILE] no se pudo escribir backup local (ignorado):', e?.message || e)
+    }
+  }
+}
+
+async function writeCards(payload, prevPayloadForBackup = null) {
+  if (prevPayloadForBackup) {
+    await backupSnapshot(prevPayloadForBackup)
+  }
+
   if (useSupabase) {
     const { error } = await supabase
       .from('configs')
@@ -132,6 +159,32 @@ async function writeCards(payload) {
   }
 }
 
+// Merge por id (reemplaza coincidentes y agrega nuevos)
+function mergeCardsById(current = [], incoming = []) {
+  const map = new Map()
+  for (const c of current) {
+    if (c && c.id != null) map.set(String(c.id), c)
+  }
+  for (const n of incoming) {
+    if (n && n.id != null) map.set(String(n.id), { ...map.get(String(n.id)), ...n })
+  }
+  return Array.from(map.values())
+}
+
+// ──────────────────────────────────────────────
+// Auth helper
+function getSecret(req) {
+  return req.get('x-admin-secret') || req.get('X-Admin-Secret') || ''
+}
+function checkAuth(req, res) {
+  const secret = getSecret(req)
+  if (secret !== ADMIN_SECRET) {
+    res.status(401).json({ error: 'unauthorized' })
+    return false
+  }
+  return true
+}
+
 // ──────────────────────────────────────────────
 // Rutas
 app.get('/', (_req, res) => {
@@ -148,30 +201,49 @@ app.get('/cards', async (_req, res) => {
   }
 })
 
+// Reemplaza TODO el dataset (mantenido por compatibilidad)
 app.put('/cards', async (req, res) => {
-  const secret =
-    req.get('x-admin-secret') ||
-    req.get('X-Admin-Secret') ||
-    ''
-
-  if (secret !== ADMIN_SECRET) {
-    return res.status(401).json({ error: 'unauthorized' })
-  }
+  if (!checkAuth(req, res)) return
 
   const body = req.body
   if (!body || !Array.isArray(body.cards)) {
     return res.status(400).json({ error: 'invalid_body' })
   }
 
-  const payload = {
+  const newPayload = {
     version: Number(body.version || 1),
     cards: body.cards
   }
 
   try {
-    await writeCards(payload)
+    const prev = await readCards()
+    await writeCards(newPayload, prev)
     res.json({ ok: true })
   } catch {
+    res.status(500).json({ error: 'write_failed' })
+  }
+})
+
+// NUEVO: fusiona por id (no borra lo no enviado)
+app.post('/cards/upsert', async (req, res) => {
+  if (!checkAuth(req, res)) return
+
+  const body = req.body
+  if (!body || !Array.isArray(body.cards)) {
+    return res.status(400).json({ error: 'invalid_body' })
+  }
+
+  try {
+    const prev = await readCards()
+    const merged = mergeCardsById(prev.cards || [], body.cards || [])
+    const next = {
+      version: Number(prev.version || 1) + 1,
+      cards: merged
+    }
+    await writeCards(next, prev)
+    res.json({ ok: true, version: next.version, updated: body.cards.length })
+  } catch (e) {
+    console.error('[UPSERT] error:', e)
     res.status(500).json({ error: 'write_failed' })
   }
 })
