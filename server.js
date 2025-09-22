@@ -15,7 +15,6 @@ const ADMIN_SECRET = process.env.ADMIN_SECRET || 'changeme'
 
 // ──────────────────────────────────────────────
 // CORS seguro por env (puede haber varios orígenes)
-// Ej: ALLOWED_ORIGINS="https://tu-app.netlify.app,https://otra.com"
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
   .split(',')
   .map(s => s.trim())
@@ -23,14 +22,13 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
 
 const corsOptions = {
   origin: (origin, cb) => {
-    // Permite herramientas tipo curl/postman (sin origin)
     if (!origin) return cb(null, true)
     if (ALLOWED_ORIGINS.length === 0 || ALLOWED_ORIGINS.includes(origin)) {
       return cb(null, true)
     }
     return cb(new Error('Not allowed by CORS'))
   },
-  methods: ['GET', 'POST', 'PUT', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'OPTIONS'], // ← agregamos PATCH
   allowedHeaders: [
     'Content-Type',
     'X-Requested-With',
@@ -43,9 +41,7 @@ const corsOptions = {
 }
 
 app.use(cors(corsOptions))
-// Responder preflight global
 app.options('*', cors(corsOptions))
-
 app.use(express.json())
 
 // ──────────────────────────────────────────────
@@ -56,7 +52,7 @@ const useSupabase = Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE)
 const supabase = useSupabase ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE) : null
 
 // ──────────────────────────────────────────────
-// MODO ARCHIVO (solo si NO hay Supabase)
+// MODO ARCHIVO (si NO hay Supabase)
 let DATA_FILE = process.env.DATA_FILE || path.join(__dirname, 'data', 'cards.json')
 
 function ensureDataFile(filePath) {
@@ -201,7 +197,7 @@ app.get('/cards', async (_req, res) => {
   }
 })
 
-// Reemplaza TODO el dataset (mantenido por compatibilidad)
+// Reemplaza TODO el dataset (compat)
 app.put('/cards', async (req, res) => {
   if (!checkAuth(req, res)) return
 
@@ -224,7 +220,7 @@ app.put('/cards', async (req, res) => {
   }
 })
 
-// NUEVO: fusiona por id (no borra lo no enviado)
+// Upsert por id (no borra lo no enviado)
 app.post('/cards/upsert', async (req, res) => {
   if (!checkAuth(req, res)) return
 
@@ -244,6 +240,53 @@ app.post('/cards/upsert', async (req, res) => {
     res.json({ ok: true, version: next.version, updated: body.cards.length })
   } catch (e) {
     console.error('[UPSERT] error:', e)
+    res.status(500).json({ error: 'write_failed' })
+  }
+})
+
+/**
+ * PATCH /cards/:id
+ * Edita una tarjeta existente (por id). Permite cambiar el id (rename) sin duplicar.
+ * Body: { id?: string, nombre?: string, coeficientes?: object, ...camposExtra }
+ * Errores:
+ *  - 404 si no existe original
+ *  - 409 si el nuevo id ya existe en otra tarjeta
+ */
+app.patch('/cards/:id', async (req, res) => {
+  if (!checkAuth(req, res)) return
+
+  const originalId = String(req.params.id || '')
+  const updates = req.body
+  if (!originalId || !updates || typeof updates !== 'object') {
+    return res.status(400).json({ error: 'invalid_body' })
+  }
+
+  try {
+    const prev = await readCards()
+    const cards = Array.isArray(prev.cards) ? [...prev.cards] : []
+    const idx = cards.findIndex(c => String(c?.id) === originalId)
+    if (idx < 0) return res.status(404).json({ error: 'not_found' })
+
+    const current = cards[idx]
+    const nextId = updates.hasOwnProperty('id') ? String(updates.id) : current.id
+    const isRename = nextId !== current.id
+
+    if (isRename && cards.some((c, i) => i !== idx && String(c?.id) === nextId)) {
+      return res.status(409).json({ error: 'id_conflict' })
+    }
+
+    const nextCard = { ...current, ...updates, id: nextId }
+    cards[idx] = nextCard
+
+    const nextPayload = {
+      version: Number(prev.version || 1) + 1,
+      cards
+    }
+
+    await writeCards(nextPayload, prev)
+    res.json({ ok: true, version: nextPayload.version, card: nextCard })
+  } catch (e) {
+    console.error('[PATCH /cards/:id] error:', e)
     res.status(500).json({ error: 'write_failed' })
   }
 })
