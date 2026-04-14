@@ -5,6 +5,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { createClient } from '@supabase/supabase-js'
+import { createHmac, timingSafeEqual } from 'crypto'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -168,23 +169,86 @@ function mergeCardsById(current = [], incoming = []) {
 }
 
 // ──────────────────────────────────────────────
-// Auth helper
-function getSecret(req) {
-  return req.get('x-admin-secret') || req.get('X-Admin-Secret') || ''
+// Token de sesión (HMAC, sin dependencias externas)
+const TOKEN_TTL_MS = 8 * 60 * 60 * 1000 // 8 horas
+
+function makeToken() {
+  const expires = String(Date.now() + TOKEN_TTL_MS)
+  const sig = createHmac('sha256', ADMIN_SECRET).update(expires).digest('hex')
+  return `${expires}.${sig}`
 }
-function checkAuth(req, res) {
-  const secret = getSecret(req)
-  if (secret !== ADMIN_SECRET) {
-    res.status(401).json({ error: 'unauthorized' })
+
+function verifyToken(token) {
+  if (!token || typeof token !== 'string') return false
+  const dot = token.lastIndexOf('.')
+  if (dot < 0) return false
+  const expires = token.slice(0, dot)
+  const sig = token.slice(dot + 1)
+  if (Date.now() > Number(expires)) return false
+  const expected = createHmac('sha256', ADMIN_SECRET).update(expires).digest('hex')
+  try {
+    return timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'))
+  } catch {
     return false
   }
-  return true
+}
+
+// ──────────────────────────────────────────────
+// Auth helper
+function checkAuth(req, res) {
+  // Bearer token (login nuevo)
+  const auth = req.get('Authorization') || ''
+  if (auth.startsWith('Bearer ') && verifyToken(auth.slice(7))) return true
+
+  // x-admin-secret legacy (compatibilidad mientras se migra)
+  const secret = req.get('x-admin-secret') || req.get('X-Admin-Secret') || ''
+  if (secret && secret === ADMIN_SECRET) return true
+
+  res.status(401).json({ error: 'unauthorized' })
+  return false
+}
+
+// ──────────────────────────────────────────────
+// Audit log
+function getClientIp(req) {
+  // Render (y la mayoría de proxies) pone la IP real en x-forwarded-for
+  const forwarded = req.get('x-forwarded-for')
+  if (forwarded) return forwarded.split(',')[0].trim()
+  return req.socket?.remoteAddress || 'unknown'
+}
+
+async function auditLog(req, action, details = {}) {
+  const entry = {
+    ts: new Date().toISOString(),
+    ip: getClientIp(req),
+    ua: req.get('user-agent') || '',
+    action,
+    ...details
+  }
+  console.log('[AUDIT]', JSON.stringify(entry))
+
+  if (useSupabase) {
+    try {
+      await supabase.from('audit_log').insert(entry)
+    } catch (e) {
+      // La tabla puede no existir aún; el log en consola siempre queda
+      console.warn('[AUDIT] insert error (ignorado):', e?.message || e)
+    }
+  }
 }
 
 // ──────────────────────────────────────────────
 // Rutas
 app.get('/', (_req, res) => {
   res.type('text/plain').send('OK. Usá /cards para ver/guardar la configuración.')
+})
+
+app.post('/auth/login', (req, res) => {
+  const { password } = req.body || {}
+  if (!password || password !== ADMIN_SECRET) {
+    return res.status(401).json({ error: 'invalid_password' })
+  }
+  res.json({ token: makeToken() })
 })
 
 app.get('/cards', async (_req, res) => {
@@ -213,6 +277,11 @@ app.put('/cards', async (req, res) => {
 
   try {
     const prev = await readCards()
+    await auditLog(req, 'put_cards', {
+      prev_count: prev.cards?.length ?? 0,
+      next_count: newPayload.cards.length,
+      version: newPayload.version
+    })
     await writeCards(newPayload, prev)
     res.json({ ok: true })
   } catch {
@@ -236,6 +305,12 @@ app.post('/cards/upsert', async (req, res) => {
       version: Number(prev.version || 1) + 1,
       cards: merged
     }
+    await auditLog(req, 'upsert_cards', {
+      prev_count: prev.cards?.length ?? 0,
+      next_count: merged.length,
+      incoming_count: body.cards.length,
+      version: next.version
+    })
     await writeCards(next, prev)
     res.json({ ok: true, version: next.version, updated: body.cards.length })
   } catch (e) {
@@ -283,6 +358,12 @@ app.patch('/cards/:id', async (req, res) => {
       cards
     }
 
+    await auditLog(req, 'patch_card', {
+      original_id: originalId,
+      next_id: nextId,
+      renamed: isRename,
+      version: nextPayload.version
+    })
     await writeCards(nextPayload, prev)
     res.json({ ok: true, version: nextPayload.version, card: nextCard })
   } catch (e) {
